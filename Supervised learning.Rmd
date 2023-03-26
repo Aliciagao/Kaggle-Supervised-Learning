@@ -1,0 +1,946 @@
+---
+title: "wg2355_Kaggle Report"
+author: "Weiyin Gao (wg2355)"
+date: "2022-12-05"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+header-includes:
+  - \usepackage{sectsty}
+  - \allsectionsfont{\color{cyan}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+
+## Load Data
+
+```{r}
+library(ggplot2)
+library(dbplyr)
+library(tidyverse)
+library(randomForest)
+library(stringr)
+library(splitstackshape)
+library(caret)
+library(ranger)
+library(skimr)
+setwd("/Users/wingwing/Documents/Columbia/AA/2022-2023 Fall/5200/KAGGLE/Source")
+music_raw = read.csv('analysisDataRaw_stand3.csv')
+music_test =  read_csv('scoringData_stand3.csv')
+```
+<br/>
+
+
+## Exploratory Data Analysis
+
+After loading the data, I first performed <b>Exploratory Data Analysis</b> to understand each variable. The summary of the data is displayed below. Here are a few highlights and my thoughts while doing the EDA before setting models and selecting features.    
+
+  1. <b>Missing values:</b> There are 108 missing values in the data, all of which are located in the Genre variable. It' s very lucky that none of the other continuous or categorical variables contain missing values, so I just need to take care of the missing values when dealing with the genre column.    
+  
+  2. <b>EDA of dependent variable:</b> By exploring the data distribution of the dependent variable rating, I checked whether this variable is close to a normal distribution. If the data appears to be left or right skewed, I need to transform the data into a normal distribution as much as possible through log transformation, etc., in order to fit the model more accurately. It appears that the data distribution of rating does not appear to be right-skewed or left-skewed.    
+  
+  3. <b>EDA & log-transformation of independent predictors:</b> Similar to the dependent variables, I explored whether any of the independent predictors were too left- or right-skewed to affect the fit of the model. Through log transformation, I corrected the four variable including liveness, tempo, loudness, and speechiness to bring the data distribution closer to a normal distribution.    
+
+<br/>
+
+### Count NAs:
+
+```{r}
+skim(music_raw)
+```
+```{r}
+na_count <-sapply(music_raw, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+na_count
+```
+<br/>
+
+### Examine dependent variable:    
+
+```{r}
+music_raw %>%
+  ggplot(aes(x = rating))+
+  geom_histogram()
+```
+<br/>
+
+
+
+### Examine numeric predictors:
+
+```{r}
+music_raw %>% 
+  select(-rating)%>%
+  select_if(is.numeric)%>%
+  pivot_longer(cols = 1:14,names_to = 'numeric_predictor', values_to = 'values'  )%>%
+  ggplot(aes(x = values))+
+  geom_histogram()+
+  facet_wrap(numeric_predictor~., scales = 'free')+
+  theme_bw()
+```
+<br/>
+
+
+### Log-transformation of skewed variables:
+
+```{r}
+music_raw$liveness_log <- log(music_raw$liveness)
+music_raw$tempo_log <- log(music_raw$tempo)
+music_raw$loudness_log <- log(-music_raw$loudness)
+music_raw$speechiness_log <- log(music_raw$speechiness)
+```
+```{r}
+music_raw %>% 
+  select(-rating)%>%
+  select_if(is.numeric)%>%
+  pivot_longer(cols = 1:18,names_to = 'numeric_predictor', values_to = 'values'  )%>%
+  ggplot(aes(x = values))+
+  geom_histogram()+
+  facet_wrap(numeric_predictor~., scales = 'free')+
+  theme_bw()
+```
+    
+<br/>
+
+
+## Feature Engineering: Genre
+
+Before proceeding to build the model, I need to work on the variables of genre and performer.    
+<br/>
+
+By analyzing the genre variable, I found that each song contains multiple song types. In the dataset, the different genres are split using commas, and a song will have up to 23 genres, which can have a significant impact on our model fitting. So, I used the following methods to try to handle the genre variables.    
+<br/>
+
+### Method 1: Extracting the last word
+After analyzing each type in the genre variable, I found that if I extracted all the type names, there would be a total of 995 types in the raw data. And if only the last word of each type was extracted, it would be better to further classify these types. For example, "dance_pop", "pop", and "post_teen_pop" can all be categorized as pop music.    
+<br/>
+<b>Data cleansing:</b> Removing unnecessary symbols and separating them by commas
+
+```{r}
+library(splitstackshape)
+genre_analysis=data.frame(music_raw[,'id'],music_raw[,'genre'])
+genre_analysis = rename(genre_analysis, id = music_raw....id..,, genre = music_raw....genre..)
+genre_analysis$genre = gsub('["]', '', genre_analysis$genre)
+genre_analysis$genre = gsub("'", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\]", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+```
+
+```{r}
+genre_analysis = cSplit(genre_analysis, "genre", sep=", ")
+```
+<br/>
+In EDA, there are <b>108</b> missing values in the genre variable. To avoid the data being deleted when applying the unpivot procedure to the features, I use the character "NA" to fill in the missing values.     
+
+```{r}
+genre_analysis$genre_01[is.na(genre_analysis$genre_01)] <-"NA"
+```
+<br/>
+Extract the last word of the genre to further classify it to reduce the number of music types:    
+```{r}
+genre_analysis$genre_01 <- word(genre_analysis$genre_01, - 1)
+genre_analysis$genre_02 <- word(genre_analysis$genre_02, - 1)
+genre_analysis$genre_03 <- word(genre_analysis$genre_03, - 1)
+genre_analysis$genre_04 <- word(genre_analysis$genre_04, - 1)
+genre_analysis$genre_05 <- word(genre_analysis$genre_05, - 1)
+genre_analysis$genre_06 <- word(genre_analysis$genre_06, - 1)
+genre_analysis$genre_07 <- word(genre_analysis$genre_07, - 1)
+genre_analysis$genre_08 <- word(genre_analysis$genre_08, - 1)
+genre_analysis$genre_09 <- word(genre_analysis$genre_09, - 1)
+genre_analysis$genre_10 <- word(genre_analysis$genre_10, - 1)
+genre_analysis$genre_11 <- word(genre_analysis$genre_11, - 1)
+genre_analysis$genre_12 <- word(genre_analysis$genre_12, - 1)
+genre_analysis$genre_13 <- word(genre_analysis$genre_13, - 1)
+genre_analysis$genre_14 <- word(genre_analysis$genre_14, - 1)
+genre_analysis$genre_15 <- word(genre_analysis$genre_15, - 1)
+genre_analysis$genre_16 <- word(genre_analysis$genre_16, - 1)
+genre_analysis$genre_17 <- word(genre_analysis$genre_17, - 1)
+genre_analysis$genre_18 <- word(genre_analysis$genre_18, - 1)
+genre_analysis$genre_19 <- word(genre_analysis$genre_19, - 1)
+genre_analysis$genre_20 <- word(genre_analysis$genre_20, - 1)
+genre_analysis$genre_21 <- word(genre_analysis$genre_21, - 1)
+genre_analysis$genre_22 <- word(genre_analysis$genre_22, - 1)
+genre_analysis$genre_23 <- word(genre_analysis$genre_23, - 1)
+```
+<br/>
+Unpivot the data with `pivot_longer` function so that I can `group_by` genres afterwards:    
+
+```{r}
+genre_analysis = 
+genre_analysis %>%
+  pivot_longer(
+    cols = starts_with("genre_"),
+    names_to = "genre_kk",
+    values_to = "genre",
+    values_drop_na = TRUE
+  )
+```
+<br/>
+Group by the updated genre types and summarise the mean ratings of each type:    
+
+```{r}
+genre_analysis = data.frame(genre_analysis[,'id'],genre_analysis[,'genre'])
+genre_analysis = merge(genre_analysis, music_raw, by = 'id')
+genre_analysis = data.frame(genre_analysis[,'id'],genre_analysis[,'genre.x'], genre_analysis[,'rating'])
+genre_analysis = rename(genre_analysis, id = genre_analysis....id..,, genre = genre_analysis....genre.x.., rating = genre_analysis....rating..)
+```
+
+```{r}
+genre_class = genre_analysis %>%
+  group_by(genre) %>%
+  summarise_at(vars(rating),
+              list(rating = mean))
+```
+<br/>
+Classify the updated genre types by the summarized rating. If the rating of the genre is higher than the average rating of all genres, a value of 1 is assigned. On the contrary, if the rating of this genre is lower than the average, a value of 0 is assigned.    
+
+```{r}
+genre_class = genre_class %>%
+  mutate(class = ifelse(rating > mean(genre_class$rating),1,0))
+```
+
+<br/>
+
+Since each song (i.e. each id) will have several genres, I again grouped by id number and got the genre score for each id by summarize. After calculating the rmse for the model, I chose to use 0.6 as the threshold for binary classification, thus transforming the genre variable for each piece of data into a binary variable of 0 and 1.
+
+```{r}
+genre_analysis = merge(genre_analysis, genre_class, by = 'genre')
+genre_analysis = rename(genre_analysis, rating = rating.x, genre_rating = rating.y)
+```
+    
+```{r}
+genre_id = genre_analysis %>%
+  group_by(id) %>%
+  summarise_at(vars(class),
+              list(class = mean))
+```
+
+```{r}
+genre_id = genre_id %>%
+  mutate(classified = ifelse(class > 0.6,1,0))
+```
+<br/>
+
+### Method 1: Results and self-reflection     
+  
+  1. When fitting the model with this newly derived variable, I found that the predicted rmse on the training and test sets was around 13, and there were no overfitting problems, which is a good result. But when applying the model to the test data and submitting it to the kaggle platform, I got an rmse of 16. This indicates that there is a problem in my model and feature engineering.       
+  
+  2. <b>This is a wrong way of handling features.</b> My operation is to classify and assign values to independent predictor by dependent variable, which means that there exists colinearity between the genre classification I derived and the rating I need to predict. In the train data, my model fits well with rating, but when using the test data without rating, my model has a large bias.   
+<br/>
+  
+### Method 2: Classifying genre by frequency of occurrence     
+  
+After discovering the drawbacks of the first treatment, I tried to classify the genre variables by how frequently each song type appears. Identical to the first approach, I extracted the last word of each song type to reduce the number of genres.     
+<br/>
+By counting the number of occurrences of each song genre, the quintiles were obtained in ascending order, i.e., the number of occurrences of genres located at 20%, 40%, 60%, 80%, and 100% in the sequence of occurrences. Based on this, the genres were classified, and the genre with the highest 20% of occurrences wa classified as A, and as the frequency of occurrence decreased, the categories were B, C, D, and E, respectively. For the 108 songs that did have genre information, they were classified as F.
+<br/>
+
+```{r}
+setwd("/Users/wingwing/Documents/Columbia/AA/2022-2023 Fall/5200/KAGGLE/Source")
+music_raw = read.csv('analysisDataRaw_stand3.csv')
+```
+```{r}
+genre_analysis=data.frame(music_raw[,'id'],music_raw[,'genre'])
+```
+```{r}
+genre_analysis = rename(genre_analysis, id = music_raw....id..,, genre = music_raw....genre..)
+```
+
+```{r}
+genre_analysis$genre = gsub('["]', '', genre_analysis$genre)
+genre_analysis$genre = gsub("'", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\]", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+```
+
+
+```{r}
+genre_analysis = cSplit(genre_analysis, "genre", sep=", ")
+```
+
+```{r}
+genre_analysis$genre_01[is.na(genre_analysis$genre_01)] <-"NA"
+```
+
+
+```{r}
+genre_analysis$genre_01 <- word(genre_analysis$genre_01, - 1)
+genre_analysis$genre_02 <- word(genre_analysis$genre_02, - 1)
+genre_analysis$genre_03 <- word(genre_analysis$genre_03, - 1)
+genre_analysis$genre_04 <- word(genre_analysis$genre_04, - 1)
+genre_analysis$genre_05 <- word(genre_analysis$genre_05, - 1)
+genre_analysis$genre_06 <- word(genre_analysis$genre_06, - 1)
+genre_analysis$genre_07 <- word(genre_analysis$genre_07, - 1)
+genre_analysis$genre_08 <- word(genre_analysis$genre_08, - 1)
+genre_analysis$genre_09 <- word(genre_analysis$genre_09, - 1)
+genre_analysis$genre_10 <- word(genre_analysis$genre_10, - 1)
+genre_analysis$genre_11 <- word(genre_analysis$genre_11, - 1)
+genre_analysis$genre_12 <- word(genre_analysis$genre_12, - 1)
+genre_analysis$genre_13 <- word(genre_analysis$genre_13, - 1)
+genre_analysis$genre_14 <- word(genre_analysis$genre_14, - 1)
+genre_analysis$genre_15 <- word(genre_analysis$genre_15, - 1)
+genre_analysis$genre_16 <- word(genre_analysis$genre_16, - 1)
+genre_analysis$genre_17 <- word(genre_analysis$genre_17, - 1)
+genre_analysis$genre_18 <- word(genre_analysis$genre_18, - 1)
+genre_analysis$genre_19 <- word(genre_analysis$genre_19, - 1)
+genre_analysis$genre_20 <- word(genre_analysis$genre_20, - 1)
+genre_analysis$genre_21 <- word(genre_analysis$genre_21, - 1)
+genre_analysis$genre_22 <- word(genre_analysis$genre_22, - 1)
+genre_analysis$genre_23 <- word(genre_analysis$genre_23, - 1)
+```
+
+```{r}
+genre_analysis = 
+genre_analysis %>%
+  pivot_longer(
+    cols = starts_with("genre_"),
+    names_to = "genre_kk",
+    values_to = "genre",
+    values_drop_na = TRUE
+  )
+```
+
+```{r}
+genre_analysis_count = genre_analysis %>%
+  count(genre)
+genre_analysis_count = genre_analysis_count[order(genre_analysis_count$n, decreasing = T),]
+```
+
+```{r}
+quantile(genre_analysis_count$n, probs = seq(0, 1, 1/5))
+```
+
+```{r}
+genre_analysis_count = genre_analysis_count %>%
+  mutate(class = ifelse(n <= 1, "E",
+                        ifelse(n <=3, "D", 
+                               ifelse(n <=11, "C",
+                                      ifelse(n <= 55, "B", "A")))))
+genre_analysis_count$class[which(genre_analysis_count$genre =='NA')] <- 'F'
+```
+```{r}
+genre_analysis_count = data.frame(genre_analysis_count[,'genre'],genre_analysis_count[,'class'])
+genre_analysis = merge(genre_analysis, genre_analysis_count, by = 'genre')
+genre_analysis = data.frame(genre_analysis[,'id'],genre_analysis[,'class'])
+genre_analysis = rename(genre_analysis, id = genre_analysis....id..,, class = genre_analysis....class..)
+```
+<br/>
+
+Subsequently, the classification variables of genre are transformed into dummy variables. As long as the type of this song has the genre in the classification of ABCDE, the corresponding dummy variable turns out to be 1, and the opposite is counted as 0.
+
+```{r}
+dmy = dummyVars(~., data = genre_analysis)
+dmy_genre = data.frame(predict(dmy, newdata = genre_analysis))
+dmy_genre = aggregate(.~id, dmy_genre, sum)
+```
+```{r}
+dmy_genre$classA[which(dmy_genre$classA > 1)] <- 1
+dmy_genre$classB[which(dmy_genre$classB > 1)] <- 1
+dmy_genre$classC[which(dmy_genre$classC > 1)] <- 1
+dmy_genre$classD[which(dmy_genre$classD > 1)] <- 1
+dmy_genre$classE[which(dmy_genre$classE > 1)] <- 1
+dmy_genre$classF[which(dmy_genre$classF > 1)] <- 1
+```
+<br/>
+The first 10 rows of the dummy variables are shown behind:
+```{r}
+head(dmy_genre,10)
+```
+<br/>
+
+### Method 2: Results and self-reflection     
+  
+  1. When fitting the model with these newly derived dummy variables, the predicted rmse on the training and test sets was around 15, which is not a good result.       
+  
+  2. I don't think this feature processing is optimal. I only grouped the types of songs that appeared into five categories by frequency. And the situation is that as long as the song has at least one type in the A classification, the dummy variable classA will show a 1. But in fact, there is a big difference in ratings between a song with 10 A classifications and a song with only one A classification. Therefore, I actually lost a lot of useful information when I categorized the variables and created dummy variables, resulting in my ratings not being very accurate.    
+<br/>
+
+  
+### Method 3: Creating dummy variables by the frequency of occurrence     
+
+Based on the first two treatments of genre variables, I continue to change the strategy. The practice of extracting the last word and the step of counting the frequency of occurrence were retained. However, instead of creating dummy variables by classification, I directly used the 21 most frequently occurring types.
+
+```{r}
+setwd("/Users/wingwing/Documents/Columbia/AA/2022-2023 Fall/5200/KAGGLE/Source")
+music_raw = read.csv('analysisDataRaw_stand3.csv')
+```
+```{r}
+genre_analysis=data.frame(music_raw[,'id'],music_raw[,'genre'])
+genre_analysis = rename(genre_analysis, id = music_raw....id..,, genre = music_raw....genre..)
+```
+
+```{r}
+genre_analysis$genre = gsub('["]', '', genre_analysis$genre)
+genre_analysis$genre = gsub("'", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\]", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+genre_analysis$genre = gsub("\\[", '', genre_analysis$genre)
+genre_analysis$genre = gsub("&", '_', genre_analysis$genre)
+genre_analysis$genre = gsub("-", '_', genre_analysis$genre)
+genre_analysis$genre = gsub("\\+", '', genre_analysis$genre)
+```
+
+
+```{r}
+genre_analysis = cSplit(genre_analysis, "genre", sep=", ")
+genre_analysis$genre_01[is.na(genre_analysis$genre_01)] <-"NA"
+```
+
+
+```{r}
+genre_analysis$genre_01 <- word(genre_analysis$genre_01, - 1)
+genre_analysis$genre_02 <- word(genre_analysis$genre_02, - 1)
+genre_analysis$genre_03 <- word(genre_analysis$genre_03, - 1)
+genre_analysis$genre_04 <- word(genre_analysis$genre_04, - 1)
+genre_analysis$genre_05 <- word(genre_analysis$genre_05, - 1)
+genre_analysis$genre_06 <- word(genre_analysis$genre_06, - 1)
+genre_analysis$genre_07 <- word(genre_analysis$genre_07, - 1)
+genre_analysis$genre_08 <- word(genre_analysis$genre_08, - 1)
+genre_analysis$genre_09 <- word(genre_analysis$genre_09, - 1)
+genre_analysis$genre_10 <- word(genre_analysis$genre_10, - 1)
+genre_analysis$genre_11 <- word(genre_analysis$genre_11, - 1)
+genre_analysis$genre_12 <- word(genre_analysis$genre_12, - 1)
+genre_analysis$genre_13 <- word(genre_analysis$genre_13, - 1)
+genre_analysis$genre_14 <- word(genre_analysis$genre_14, - 1)
+genre_analysis$genre_15 <- word(genre_analysis$genre_15, - 1)
+genre_analysis$genre_16 <- word(genre_analysis$genre_16, - 1)
+genre_analysis$genre_17 <- word(genre_analysis$genre_17, - 1)
+genre_analysis$genre_18 <- word(genre_analysis$genre_18, - 1)
+genre_analysis$genre_19 <- word(genre_analysis$genre_19, - 1)
+genre_analysis$genre_20 <- word(genre_analysis$genre_20, - 1)
+genre_analysis$genre_21 <- word(genre_analysis$genre_21, - 1)
+genre_analysis$genre_22 <- word(genre_analysis$genre_22, - 1)
+genre_analysis$genre_23 <- word(genre_analysis$genre_23, - 1)
+```
+
+```{r}
+genre_analysis = 
+genre_analysis %>%
+  pivot_longer(
+    cols = starts_with("genre_"),
+    names_to = "genre_kk",
+    values_to = "genre",
+    values_drop_na = TRUE
+  )
+```
+```{r}
+genre_analysis_count = genre_analysis %>%
+  count(genre)
+genre_analysis_count = genre_analysis_count[order(genre_analysis_count$n, decreasing = T),]
+```
+
+```{r}
+music_raw <- music_raw %>%
+  mutate(is_rock = grepl("rock", genre)) %>%
+  mutate(is_pop = grepl("pop", genre)) %>%
+  mutate(is_soul = grepl("soul", genre)) %>%
+  mutate(is_rap = grepl("rap", genre)) %>%
+  mutate(is_hop = grepl("hop", genre)) %>%
+  mutate(is_country = grepl("country", genre)) %>%
+  mutate(is_gold = grepl("gold", genre)) %>%
+  mutate(is_standards = grepl("standards", genre)) %>%
+  mutate(is_motown = grepl("motown", genre)) %>%
+  mutate(is_funk = grepl("funk", genre)) %>%
+  mutate(is_blues = grepl("blues", genre)) %>%
+  mutate(is_rb = grepl("r_b", genre)) %>%
+  mutate(is_rr = grepl("rock_and_roll", genre)) %>%
+  mutate(is_folk = grepl("folk", genre)) %>%
+  mutate(is_con = grepl("contemporary", genre)) %>%
+  mutate(is_disco = grepl("disco", genre)) %>%
+  mutate(is_metal = grepl("metal", genre)) %>%
+  mutate(is_trap = grepl("trap", genre)) %>%
+  mutate(is_road = grepl("road", genre)) %>%
+  mutate(is_wave = grepl("wave", genre)) %>%
+  mutate(is_lounge = grepl("lounge", genre))
+```
+
+<br/>
+
+### Method 3: Results and self-reflection     
+  
+  1. When fitting the model with these newly derived dummy variables, the predicted rmse on the training and test sets was around 14, which is a huge improvement from the past two strategies.       
+  
+  2. This approach seems to be very effective in improving the accuracy of the model, but so far I have only created 21 types of dummy variables. Next, I would like to increase the number of dummy variables to see if I can further improve the model performance.    
+<br/>
+
+
+  
+### Method 4: Creating dummy variables with all of the genres
+Use the song genres that appear simultaneously in the train and test datasets as dummy variables.
+<br/>
+
+```{r}
+setwd("/Users/wingwing/Documents/Columbia/AA/2022-2023 Fall/5200/KAGGLE/Source")
+music_raw = read.csv('analysisDataRaw_stand3.csv')
+music_test =  read_csv('scoringData_stand3.csv')
+```
+
+Managing the train dataset:
+```{r}
+music_raw$genre = gsub('["]', '', music_raw$genre)
+music_raw$genre = gsub("'", '', music_raw$genre)
+music_raw$genre = gsub("\\]", '', music_raw$genre)
+music_raw$genre = gsub("\\[", '', music_raw$genre)
+music_raw$genre = gsub("\\[", '', music_raw$genre)
+music_raw$genre = gsub(", ", ',', music_raw$genre)
+music_raw$genre = gsub(" ", '_', music_raw$genre)
+music_raw$genre = gsub("&", '_', music_raw$genre)
+music_raw$genre = gsub("-", '_', music_raw$genre)
+music_raw$genre = gsub("\\+", '', music_raw$genre)
+```
+
+```{r}
+music_raw$genre = strsplit(music_raw$genre, ",")
+```
+```{r}
+library(qdap)
+music_raw = cbind(music_raw, mtabulate(music_raw$genre))
+```
+
+<br/>
+Managing the test dataset:
+
+```{r}
+music_test$genre = gsub('["]', '', music_test$genre)
+music_test$genre = gsub("'", '', music_test$genre)
+music_test$genre = gsub("\\]", '', music_test$genre)
+music_test$genre = gsub("\\[", '', music_test$genre)
+music_test$genre = gsub("\\[", '', music_test$genre)
+music_test$genre = gsub(", ", ',', music_test$genre)
+music_test$genre = gsub(" ", '_', music_test$genre)
+music_test$genre = gsub("&", '_', music_test$genre)
+music_test$genre = gsub("-", '_', music_test$genre)
+music_test$genre = gsub("\\+", '', music_test$genre)
+```
+
+```{r}
+music_test$genre = strsplit(music_test$genre, ",")
+music_test = cbind(music_test, mtabulate(music_test$genre))
+```
+<br/>
+
+Keep the song types that appear in both train and test datasets:
+
+```{r}
+sharaed_columns = intersect(names(music_raw), names(music_test))
+music_test = select(music_test, all_of(sharaed_columns))
+music_raw = select(music_raw, c('rating', all_of(sharaed_columns) ))
+music_test = subset(music_test, select = -genre)
+music_raw = subset(music_raw, select = -genre)
+```
+
+<br/>
+
+### Method 4: Results and self-reflection     
+  
+  1. When fitting the model with these newly derived dummy variables, the predicted rmse on the training and test sets was around 14, which is a huge improvement from the past two strategies.       
+  
+  2. In this way, a total of 581 dummy variables were created, and the rmse of the rating prediction obtained by this strategy was the lowest when the same model was fitted. Therefore, I identified this strategy as the final way to deal with genre variables.    
+<br/>
+
+
+
+## Feature Engineering: Performer
+
+Similar to the genre variable, the performer variable should also be sorted and cleaned before fitting the model.
+<br/>
+
+### Method: 
+Create the variable "top_performers" by the frequency of the singer's occurrence in the training data. By calculating the number of occurences in the training dataset, the top 30 performers are identified as top performers.
+<br/>
+
+Managing the train dataset:
+
+```{r}
+music_raw$performer = trimws(music_raw$performer)
+performer_analysis=data.frame(music_raw[,'id'],music_raw[,'performer'])
+performer_analysis = rename(performer_analysis, id = music_raw....id..,, performer = music_raw....performer..)
+performer_analysis = cSplit(performer_analysis, "performer", sep=" & ")
+performer_analysis$performer_1[is.na(performer_analysis$performer_1)] <-"NA"
+```
+```{r}
+performer_analysis = 
+performer_analysis %>%
+  pivot_longer(
+    cols = starts_with("performer_"),
+    names_to = "performer_kk",
+    values_to = "performer",
+    values_drop_na = TRUE
+  )
+```
+```{r}
+performer_analysis_count = performer_analysis %>%
+  count(performer)
+performer_analysis_count = performer_analysis_count[order(performer_analysis_count$n, decreasing = T),]
+```
+
+```{r}
+top_performer_df = subset(performer_analysis_count, performer_analysis_count$n > 30)
+top_performer = top_performer_df$performer
+top_performer
+```
+
+```{r}
+music_raw$is_top_performer <- as.numeric(str_detect(music_raw$performer, paste(top_performer, collapse='|')))
+```
+<br/>
+
+Managing the test dataset:
+```{r}
+music_test$is_top_performer <- as.numeric(str_detect(music_test$performer, paste(top_performer, collapse='|')))
+```
+
+```{r}
+music_test = subset(music_test, select = -performer)
+music_test = subset(music_test, select = -id)
+music_test = subset(music_test, select = -song)
+music_raw = subset(music_raw, select = -performer)
+music_raw = subset(music_raw, select = -id)
+music_raw = subset(music_raw, select = -song)
+```
+<br/>
+
+### Self-reflection and limitations:
+  
+  1. Since I did not come up with a better way to handle the performer variable, I settled on this approach as the final treatment strategy. Although the accuracy of the predictions is slightly improved compared to not using the performer in the model at all, there are limitations and areas for improvement in this strategy.
+  2. The training set consists of a total of 20,000 data items, which is not a very large data set. My evaluation of top-performers by the number of occurrences in the dataset would be biased. For example, if a very well-known performer has only one song included in the current dataset, it is unlikely that he would be in the top performer category according to my algorithm. However, in fact, his rating for each song is at a high level.
+  
+<br/>
+
+
+
+## Split the dataset
+```{r}
+library(caret)
+set.seed(1031)
+split_raw = createDataPartition(y=music_raw$rating,p = 0.7,list = F,groups = 200)
+train_raw = music_raw[split_raw,]
+test_raw = music_raw[-split_raw,]
+```
+<br/>
+
+## Feature selection 
+
+Hybrid stepwise regression model and Lasso model was applied to select predictors apart from dummy variables. After the feature selection,it turned out that all the predictors expect "key" should be used in the model.
+<br/>
+
+### Stepwise variable selection
+
+```{r}
+start_music = lm(rating~1,data=train_raw)
+empty_music = lm(rating~1,data=train_raw)
+full_music = lm(rating ~ track_duration + track_explicit + danceability + energy + key + loudness + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature, data=train_raw)
+hybridStepwise = step(start_music,
+                      scope=list(upper=full_music,lower=empty_music),
+                      direction='both')
+```
+
+```{r}
+summary(hybridStepwise)
+```
+
+```{r}
+hybridStepwise$anova %>% 
+  mutate(step_number = as.integer(rownames(hybridStepwise$anova))-1) %>%
+  mutate(Step = as.character(Step))%>%
+  ggplot(aes(x = reorder(Step,X = step_number), y = AIC))+
+  geom_point(color = 'darkgreen', size = 2) + 
+  scale_x_discrete(name = 'Variable Added or Dropped')+
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.9, hjust=0.9))
+```
+<br/>
+
+
+### lasso selection
+```{r}
+library(glmnet)
+x = model.matrix(rating ~ track_duration + track_explicit + danceability + energy + key + loudness + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature, data=train_raw)
+y = train_raw$rating
+set.seed(1031)
+cv_lasso = cv.glmnet(x = x, 
+                     y = y, 
+                     alpha = 1,
+                     type.measure = 'mse')
+```
+
+```{r}
+plot(cv_lasso)
+```
+```{r}
+cv_lasso$lambda.min
+```
+
+```{r}
+coef(cv_lasso, s = cv_lasso$lambda.1se) %>%
+  round(4)
+```
+<br/>
+
+
+## Building models
+In all, seven models were constructed:    
+  1. Model1: Simple linear regression    
+  2. Model2: Default regression tree    
+  3. Model3: Tuned Tree    
+  4. Model4: Bag    
+  5. Model5: Random Forest    
+  6. Model6: Tuned randomForest   
+  7. Model7: Tuned Ranger
+  
+<br/>
+
+### Model1: Simple linear regression
+
+```{r}
+model1 = lm(rating ~ .-key, data = train_raw)
+```
+
+```{r}
+pred1_train = predict(model1)
+rmse1_train = sqrt(mean((pred1_train-train_raw$rating)^2))
+rmse1_train
+```
+```{r}
+pred1_test = predict(model1, newdata = test_raw)
+rmse1_test = sqrt(mean((pred1_test-test_raw$rating)^2))
+rmse1_test
+```
+<br/>
+
+### Model2: Default regression tree
+```{r}
+library(rpart)
+library(rpart.plot)
+model2 = rpart(rating ~ .-key,data = train_raw, method = 'anova')
+```
+```{r}
+pred2_train = predict(model2)
+rmse2_train = sqrt(mean((pred2_train-train_raw$rating)^2))
+rmse2_train
+```
+```{r}
+pred2_test = predict(model2, newdata = test_raw)
+rmse2_test = sqrt(mean((pred2_test-test_raw$rating)^2))
+rmse2_test
+```
+
+<br/>
+
+### Model3: Tuned Tree
+
+```{r}
+library(caret)
+#tree_cv$bestTune = 0.0011
+#tuneGrid = expand.grid(cp = seq(0,0.1,0.0001))
+#trControl = trainControl(method = 'cv',number = 5)
+#set.seed(1031)
+#tree_cv = train(rating ~ .-key,
+#               data = train_raw,
+#               method = 'rpart',
+#               trControl = trControl, 
+#               tuneGrid = tuneGrid)
+```
+```{r}
+#tree_cv$bestTune
+```
+```{r}
+model3 = rpart(rating ~ .-key, 
+               data = train_raw, 
+               method = 'anova', 
+               cp = 0.0011)
+
+pred3_train = predict(model3)
+rmse3_train = sqrt(mean((pred3_train - train_raw$rating)^2))
+rmse3_train
+```
+
+```{r}
+pred3_test = predict(model3, newdata = test_raw)
+rmse3_test = sqrt(mean((pred3_test-test_raw$rating)^2))
+rmse3_test
+```
+
+
+<br/>
+
+### Model4: Bag
+```{r}
+library(ipred)
+set.seed(1031) 
+model4 = bagging(rating ~ .-key,
+              data = train_raw, 
+              nbagg = 200)
+
+pred4_train = predict(model4)
+rmse4_train = sqrt(mean((pred4_train - train_raw$rating)^2))
+rmse4_train
+```
+
+```{r}
+pred4_test = predict(model4, newdata = test_raw)
+rmse4_test = sqrt(mean((pred4_test-test_raw$rating)^2))
+rmse4_test
+```
+
+<br/>
+
+### Model5: Randomforest
+```{r}
+library(randomForest)
+set.seed(1031)
+model5 = randomForest(rating ~ .-key, 
+                      train_raw, 
+                      ntree = 200)
+
+pred5_train = predict(model5)
+rmse5_train = sqrt(mean((pred5_train - train_raw$rating)^2))
+rmse5_train
+```
+```{r}
+pred5_test = predict(model5, newdata = test_raw)
+rmse5_test = sqrt(mean((pred5_test-test_raw$rating)^2))
+rmse5_test
+```
+
+
+
+<br/>
+
+### Model6: Tuned randomForest
+```{r}
+library(randomForest)
+#trControl = trainControl(method = 'cv', number = 5)
+#tuneGrid = expand.grid(mtry = 1:ncol(train_raw)-2)
+#set.seed(1031)
+#forest_cv = train(rating ~ .-key, 
+#                  data = train_raw, 
+#                  method = 'rf', 
+#                  trControl = trControl, 
+#                  tuneGrid = tuneGrid, 
+#                  ntree = 500)
+#forest_cv$bestTune$mtry
+```
+```{r}
+set.seed(1031)
+model6 = randomForest(rating ~ .-key,
+                        data = train_raw, 
+                        mtry = 18, 
+                        ntree = 200)
+
+pred6_train = predict(model6)
+rmse6_train = sqrt(mean((pred6_train - train_raw$rating)^2))
+rmse6_train
+```
+
+```{r}
+pred6_test = predict(model6, newdata = test_raw)
+rmse6_test = sqrt(mean((pred6_test-test_raw$rating)^2))
+rmse6_test
+```
+
+<br/>
+
+### Model7: Tuned Ranger
+```{r}
+library(randomForest)
+#trControl=trainControl(method="cv",number=5)
+#tuneGrid = expand.grid(mtry=1:36, 
+#                       splitrule = c('variance','extratrees','maxstat'), 
+#                       min.node.size = c(2,5,10,15,20,25))
+#set.seed(1031)
+#cvModel = train(rating ~ .-key, 
+#                data = train_raw,
+#                method="ranger",
+#                num.trees=200,
+#                trControl=trControl,
+#                tuneGrid=tuneGrid)
+#cvModel$bestTune
+```
+
+```{r}
+set.seed(1031)
+model7 = ranger(rating ~ .-key, 
+                          data = train_raw,
+                          num.trees = 200, 
+                          mtry=17, 
+                          min.node.size = 20, 
+                          splitrule = "extratrees")
+
+pred7_train = predict(model7, data = train_raw, num.trees = 200)
+rmse7_train = sqrt(mean((pred7_train$predictions - train_raw$rating)^2))
+rmse7_train
+```
+
+```{r}
+pred7_test = predict(model7, data = test_raw, num.trees = 200)
+rmse7_test = sqrt(mean((pred7_test$predictions - test_raw$rating)^2))
+rmse7_test
+```
+
+<br/>
+
+### Model summary
+```{r}
+# Model1: Simple linear regression    
+rmse1_test
+# Model2: Default regression tree    
+rmse2_test
+# Model3: Tuned Tree    
+rmse3_test
+# Model4: Bag    
+rmse4_test
+# Model5: Random Forest    
+rmse5_test
+# Model6: Tuned randomForest  
+rmse6_test
+# Model7: Tuned Ranger
+rmse7_test
+```
+<br/>
+
+## Combining models
+In order to get a better prediction, I combine the three model with the lowest rmse in the test data. Mean rating of these two predicted value was calculated as my final submission.
+
+```{r}
+# Model5: Random Forest    
+music_test_model5 = music_test %>%
+  mutate(rating = predict(model5, newdata = music_test))
+```
+
+```{r}
+# Model6: Tuned randomForest
+music_test_model6 = music_test %>%
+  mutate(rating = predict(model6, newdata = music_test))
+```
+
+```{r}
+# Model7: Tuned Ranger
+music_test_model7 = predict(model7, data = music_test, num.trees = 200)
+
+score_model7 = music_test %>%
+  mutate(rating = music_test_model7$predictions)
+```
+<br/>
+
+## Conclusion and Self-refelection
+
+For this kaggle PCA prediction event, I submitted a total of 23 predictions. Through continuous feature engineering, data cleaning and model modification and parameter adjustment, the rmse improved from 15.3 at the beginning to 14.5 with my final submission.
+<br/>
+
+In the beginning, I could only use excel (PowerQuery with unpivot function, same as  `pivot_longer` function in R) for data processing. However, as the course progressed in difficulty, I was able to do everything I needed using r-code. I was very satisfied with my performance and felt that this project really allowed me to apply the code and models I learned in class to a real world situation. I learned a lot. Following behind are some of my thoughts and reflections:
+
+  1. <b>EDA and data-transformation helps.</b> Before feature engineering and model building, it is very important to first perform exploratory analysis on each variable in the data to understand the distribution. If the predictor is too skewed to the left or right when fitting the model, it will affect the effectiveness and accuracy of the model. Therefore, it is very important to find out the data that are too left or right skewed by EDA and correct the data through log-transformation and other operations to make them show a normal distribution for the subsequent modeling and parameter adjustment steps. Also, if a transformation is performed on the dependent variable, it is important to remember to obtain the original data by reversing the operation after the model yields the predicted results.      
+
+  2. <b>Feature engineering is the most crucial.</b> Instead of spending a lot of time on selecting models, we should spend more time on tuning and cleaning the variables. For this dataset, the step that will open up the gap between the students' prediction is the way we handle the genre, performer and song variables. I spent a lot of effort on the genre variable this time, but for the performer variable I only determined the so-called top performer by its frequency of occurrence in the dataset. In the feature engineering section of the report, I have already elaborated on the limitations of such operation. Also, I did not use the variable "song" in this prediction, but I think there may be specific songs that would have a significant association with the rating. If a suitable way can be found to handle the song variable, it should be possible to further improve the accuracy of the model and reduce the final rmse based on the current one. I would continue to think about how to handle these three character variables if more time is given.     
+
+  3. <b>Be careful of multicollinearity.</b> When I first started to deal with genre variables, I tried to classify the genre variables by rating. Such an approach would have significant covariance between the dependent variable and the predictors and would greatly affect the results. This is why I got a very low rmse in the test set with the rating variables, but the results turned out to be very biased in the real predictions.      
+  
+  4. <b>Combining models provides surprising outcomes.</b>  There is no optimal model, but a surprising result can be obtained by combining several models. By combining two models, tuned random forest and tuned ranger, and averaging the two predictions, I obtained my best result.    
+  
+  5. If given more time, I would work further on handling the genre, performer, and song variables. Besides, I would try to optimize my codes which would help the console to run faster.
